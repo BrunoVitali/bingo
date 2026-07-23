@@ -240,6 +240,10 @@
   .rankrow .rm{ font-size:12.5px; color:#a79e86; margin-top:2px; }
   .rankrow .rm b{ color:var(--gold); font-variant-numeric:tabular-nums; }
   .rankrow .rm .fc{ color:#cfc6b0; }
+  .rankrow .admctl{ margin-top:8px; font-size:11px; color:#8f886f; display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  .rankrow .admctl button{ min-width:28px; height:28px; border-radius:7px; border:1px solid #4a4234; background:#201c14; color:var(--chalk); font-size:15px; font-weight:800; cursor:pointer; padding:0 6px; -webkit-tap-highlight-color:transparent; }
+  .rankrow .admctl button:active{ background:#2c261a; }
+  .rankrow .admctl .delp{ border-color:#5a3630; color:#e08a7c; margin-left:auto; font-size:13px; }
 
   /* ---------- Overlay ganar ---------- */
   .overlay{ position:fixed; inset:0; z-index:40; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; background:rgba(6,5,4,.74); backdrop-filter:blur(3px); text-align:center; }
@@ -368,6 +372,7 @@
     <button class="iconbtn" id="rankBack" aria-label="Volver">‹</button>
     <h2>🏆 Ranking</h2>
     <span class="cnt" id="rankLive"></span>
+    <button class="iconbtn hidden" id="rankAdmin" aria-label="Admin" style="width:36px;height:36px;font-size:15px;margin-left:8px">🔒</button>
   </div>
   <div class="subbody">
     <div id="rankList" class="itemlist"></div>
@@ -402,7 +407,7 @@
 <script type="module">
   // Firebase: ranking compartido en vivo (Firestore)
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-  import { getFirestore, doc, setDoc, increment, serverTimestamp, collection, query, orderBy, limit, onSnapshot } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+  import { getFirestore, doc, setDoc, increment, serverTimestamp, collection, query, orderBy, limit, onSnapshot, getDocs, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
   try{
     const app = initializeApp({
       apiKey: "AIzaSyA1TV0sL9fmFeVlsGaRJTZeSGJ6Todj90g",
@@ -418,6 +423,9 @@
       ok: true,
       setName: function(id, name){ return setDoc(doc(db,COL,id), { name:name, bingos:increment(0), fullCards:increment(0), updated:serverTimestamp() }, {merge:true}); },
       record: function(id, name, bingos, fullCards){ var d={ name:name, updated:serverTimestamp() }; if(bingos) d.bingos=increment(bingos); if(fullCards) d.fullCards=increment(fullCards); return setDoc(doc(db,COL,id), d, {merge:true}); },
+      adjust: function(id, nb, nf){ var d={ updated:serverTimestamp() }; if(nb) d.bingos=increment(nb); if(nf) d.fullCards=increment(nf); return setDoc(doc(db,COL,id), d, {merge:true}); },
+      remove: function(id){ return deleteDoc(doc(db,COL,id)); },
+      resetAll: function(){ return getDocs(collection(db,COL)).then(function(snap){ var batch=writeBatch(db); snap.forEach(function(dd){ batch.delete(dd.ref); }); return batch.commit(); }); },
       watch: function(cb, err){ try{ var q=query(collection(db,COL), orderBy("bingos","desc"), limit(100)); return onSnapshot(q, function(snap){ var rows=[]; snap.forEach(function(dd){ var v=dd.data(); rows.push({ id:dd.id, name:v.name||"?", bingos:v.bingos||0, fullCards:v.fullCards||0 }); }); cb(rows); }, function(e){ if(err) err(e); }); }catch(e){ if(err) err(e); return function(){}; } }
     };
   }catch(e){ window.BingoDB=null; console.warn("Firebase no disponible:", e); }
@@ -428,9 +436,16 @@
 (function(){
   "use strict";
 
-  /* ---- Service worker: instalable como app + offline (solo cuando se hostea) ---- */
+  /* ---- Service worker: instalable + offline + auto-actualización ---- */
   try{
     if("serviceWorker" in navigator && location.protocol.startsWith("http") && window.top === window.self){
+      var hadCtrl = !!navigator.serviceWorker.controller, swReloaded=false;
+      navigator.serviceWorker.addEventListener("controllerchange", function(){
+        if(!hadCtrl || swReloaded) return; // primera instalación: no recargar
+        swReloaded=true;
+        try{ var t=document.getElementById("toast"); if(t){ t.textContent="Actualizando… ✨"; t.classList.add("show"); } }catch(e){}
+        setTimeout(function(){ location.reload(); }, 500);
+      });
       window.addEventListener("load", function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
     }
   }catch(e){}
@@ -747,38 +762,60 @@
   $("mExit").addEventListener("click", function(){ closeMenu(); show("start"); $("name").value=current?current.name:""; });
 
   /* ---------- Ranking (Firebase) ---------- */
-  function deviceId(){ var id=store.get("deviceId",null); if(!id){ id=uid("dev"); store.set("deviceId",id); } return id; }
-  function registerPlayer(){ try{ if(window.BingoDB && window.BingoDB.ok && current){ window.BingoDB.setName(deviceId(), current.name).catch(function(){}); } }catch(e){} }
-  function recordScore(bingos, full){ try{ if(window.BingoDB && window.BingoDB.ok && current){ window.BingoDB.record(deviceId(), current.name, bingos, full).catch(function(){}); } }catch(e){} }
+  var ADMIN_NAME="bruno", ADMIN_PIN="228645";
+  function playerKey(name){ var n=(name||"").trim().toLowerCase().replace(/\s+/g," ").replace(/[\/.#$\[\]%]/g,"-"); return "p_"+(n||"jugador").slice(0,80); }
+  function myName(){ return current?current.name:(store.get("lastName","")||""); }
+  function myKey(){ return playerKey(myName()); }
+  function isAdminName(){ return (myName()||"").trim().toLowerCase()===ADMIN_NAME; }
+  function adminUnlocked(){ return store.get("admin",false)===true; }
+  function isAdmin(){ return isAdminName() && adminUnlocked(); }
+
+  function registerPlayer(){ try{ if(current){ store.set("lastName", current.name); } if(window.BingoDB && window.BingoDB.ok && current){ window.BingoDB.setName(playerKey(current.name), current.name).catch(function(){}); } }catch(e){} }
+  function recordScore(bingos, full){ try{ if(window.BingoDB && window.BingoDB.ok && current){ window.BingoDB.record(playerKey(current.name), current.name, bingos, full).catch(function(){}); } }catch(e){} }
   window.addEventListener("bingodb-ready", function(){ if(current) registerPlayer(); });
 
-  var rankUnsub=null;
+  var rankUnsub=null, rankRows=[];
   function openLeaderboard(){
-    show("leaderboard");
+    show("leaderboard"); updateAdminBtn();
     var list=$("rankList");
     if(!window.BingoDB || !window.BingoDB.ok){ list.innerHTML='<div class="empty">El ranking necesita internet 📶<br>Conectate y volvé a entrar.</div>'; $("rankLive").textContent=""; return; }
     list.innerHTML='<div class="empty">Cargando ranking… ⏳</div>'; $("rankLive").textContent="● en vivo";
-    var me=deviceId();
     if(rankUnsub){ rankUnsub(); rankUnsub=null; }
-    rankUnsub=window.BingoDB.watch(function(rows){ renderRank(rows, me); }, function(err){
+    rankUnsub=window.BingoDB.watch(function(rows){ rankRows=rows; renderRank(); }, function(err){
       list.innerHTML='<div class="empty">No se pudo cargar el ranking.<br><small>('+((err&&err.code)||"error")+')</small><br>¿Activaste Firestore en Firebase?</div>'; $("rankLive").textContent="";
     });
   }
-  function renderRank(rows, me){
-    var list=$("rankList");
+  function renderRank(){
+    var list=$("rankList"), rows=rankRows, me=myKey(), adm=isAdmin();
     if(!rows.length){ list.innerHTML='<div class="empty">Todavía no hay bingos registrados.<br>¡Que empiece la juntada! 🎉</div>'; return; }
     list.innerHTML="";
     rows.forEach(function(r,i){
       var row=document.createElement("div"); row.className="rankrow"+(r.id===me?" me":"");
       var medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":'<span class="pos">'+(i+1)+'</span>';
       var full=r.fullCards?' · <span class="fc">'+r.fullCards+' lleno'+(r.fullCards===1?'':'s')+' 🏆</span>':"";
-      row.innerHTML='<div class="rk">'+medal+'</div><div class="ri"><div class="rn"></div><div class="rm"><b>'+r.bingos+'</b> bingo'+(r.bingos===1?'':'s')+full+'</div></div>';
+      var ctl=adm?'<div class="admctl">bingos <button data-k="'+r.id+'" data-t="b" data-d="-1">−</button><button data-k="'+r.id+'" data-t="b" data-d="1">+</button> · llenos <button data-k="'+r.id+'" data-t="f" data-d="-1">−</button><button data-k="'+r.id+'" data-t="f" data-d="1">+</button><button class="delp" data-del="'+r.id+'">🗑</button></div>':'';
+      row.innerHTML='<div class="rk">'+medal+'</div><div class="ri"><div class="rn"></div><div class="rm"><b>'+r.bingos+'</b> bingo'+(r.bingos===1?'':'s')+full+'</div>'+ctl+'</div>';
       row.querySelector(".rn").textContent=r.name+(r.id===me?" (vos)":"");
       list.appendChild(row);
     });
+    if(adm){
+      var foot=document.createElement("div"); foot.style.marginTop="14px";
+      foot.innerHTML='<button class="btn btn-line" id="adminReset" style="width:100%;border-color:#5a3630;color:#e08a7c">🗑️ Reiniciar TODO el ranking</button>';
+      list.appendChild(foot);
+      $("adminReset").addEventListener("click", function(){ if(confirm("¿Reiniciar el ranking de TODOS a cero? No se puede deshacer.")){ window.BingoDB.resetAll().then(function(){ toast("Ranking reiniciado"); }).catch(function(){ toast("No se pudo reiniciar"); }); } });
+      list.querySelectorAll(".admctl button[data-k]").forEach(function(b){ b.addEventListener("click", function(){ var t=b.getAttribute("data-t"), d=parseInt(b.getAttribute("data-d"),10); window.BingoDB.adjust(b.getAttribute("data-k"), t==="b"?d:0, t==="f"?d:0).catch(function(){}); }); });
+      list.querySelectorAll("button[data-del]").forEach(function(b){ b.addEventListener("click", function(){ if(confirm("¿Borrar a este jugador del ranking?")){ window.BingoDB.remove(b.getAttribute("data-del")).catch(function(){}); } }); });
+    }
+  }
+  function updateAdminBtn(){ var b=$("rankAdmin"); if(!b) return; b.classList.toggle("hidden", !isAdminName()); b.textContent=adminUnlocked()?"🔧":"🔒"; }
+  function toggleAdmin(){
+    if(adminUnlocked()){ store.set("admin",false); toast("🔒 Admin bloqueado"); }
+    else{ var pin=prompt("PIN de admin:"); if(pin===null) return; if(pin===ADMIN_PIN){ store.set("admin",true); toast("🔧 Admin desbloqueado"); } else { toast("PIN incorrecto"); return; } }
+    updateAdminBtn(); renderRank();
   }
   $("lnkRank").addEventListener("click", openLeaderboard);
   $("mRank").addEventListener("click", function(){ closeMenu(); openLeaderboard(); });
+  $("rankAdmin").addEventListener("click", toggleAdmin);
   $("rankBack").addEventListener("click", function(){ if(rankUnsub){ rankUnsub(); rankUnsub=null; } show(current?"game":"start"); });
 
   /* ---------- Mis cartones ---------- */
