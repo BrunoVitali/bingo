@@ -461,7 +461,8 @@
         return getDocs(collection(db,SCOL,id,"parts")).then(function(snap){
           var batch=writeBatch(db); snap.forEach(function(d){ batch.delete(d.ref); }); batch.delete(doc(db,SCOL,id)); return batch.commit();
         }).catch(function(){ return deleteDoc(doc(db,SCOL,id)); });
-      }
+      },
+      hasSoundData: function(id){ return getDoc(doc(db,SCOL,id)).then(function(m){ return m.exists(); }).catch(function(){ return false; }); }
     };
   }catch(e){ window.BingoDB=null; console.warn("Firebase no disponible:", e); }
   window.dispatchEvent(new Event("bingodb-ready"));
@@ -607,6 +608,9 @@
   function cloudReady(){ return !!(window.BingoDB && window.BingoDB.ok && window.BingoDB.putSoundData); }
   function cloudPutSound(id, blob){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.putSoundData(id, blob).catch(function(e){ console.warn("No se pudo subir el sonido "+id, e); throw e; }); }
   function cloudDelSound(id){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.delSoundData(id).catch(function(){}); }
+  function cloudHasSound(id){ if(!cloudReady() || !window.BingoDB.hasSoundData) return Promise.resolve(false); return window.BingoDB.hasSoundData(id).catch(function(){ return false; }); }
+  // Devuelve un blob reproducible: local si existe, si no lo baja de la nube y lo cachea.
+  function getSoundBlob(id){ return IDB.get(id).then(function(b){ if(b) return b; if(!cloudReady()) return null; return window.BingoDB.getSoundData(id).then(function(cb){ if(cb) IDB.put(id, cb); return cb; }).catch(function(){ return null; }); }); }
 
   var SND = {
     ctx:null, buffers:{}, urls:{}, onLoad:null,
@@ -938,7 +942,7 @@
       emo.addEventListener("input", function(){ updateItem(it.id,{e:emo.value}); });
       ph.addEventListener("input", function(){ updateItem(it.id,{t:ph.value}); });
       var snd=document.createElement("span"); snd.className="sndwrap";
-      IDB.has(it.id).then(function(has){ setSndBtn(snd,it,has); });
+      IDB.has(it.id).then(function(has){ if(has){ setSndBtn(snd,it,true); } else { cloudHasSound(it.id).then(function(ch){ setSndBtn(snd,it,ch); }); } });
       var del=document.createElement("button"); del.className="mini del"; del.textContent="🗑"; del.setAttribute("aria-label","Borrar");
       del.addEventListener("click", function(){ if(!confirm('¿Borrar la casilla "'+it.t+'"?')) return; setItems(getItems().filter(function(x){ return x.id!==it.id; })); IDB.del(it.id); renderEditor(); toast("Casilla borrada"); });
       row.appendChild(emo); row.appendChild(ph); row.appendChild(snd); row.appendChild(del);
@@ -949,7 +953,7 @@
     wrap.innerHTML="";
     if(has){
       var play=document.createElement("button"); play.className="mini on"; play.textContent="▶"; play.title="Escuchar"; play.setAttribute("aria-label","Escuchar sonido");
-      play.onclick=function(){ IDB.get(it.id).then(function(blob){ if(blob) SND.playBlob(blob); }); };
+      play.onclick=function(){ getSoundBlob(it.id).then(function(blob){ if(blob) SND.playBlob(blob); }); };
       var rm=document.createElement("button"); rm.className="mini del"; rm.textContent="🔇"; rm.title="Quitar sonido"; rm.setAttribute("aria-label","Quitar sonido");
       rm.onclick=function(){ if(confirm('¿Quitar el sonido de "'+it.t+'"? (se quita también de la nube)')){ IDB.del(it.id); cloudDelSound(it.id); setSndBtn(wrap,it,false); toast("Sonido quitado"); } };
       wrap.appendChild(play); wrap.appendChild(rm);
