@@ -645,10 +645,10 @@
       if(settings.muted || !id) return false;
       var ctx=this.ensure();
       if(ctx && this.buffers[id]){ try{ var s=ctx.createBufferSource(); s.buffer=this.buffers[id]; s.connect(ctx.destination); s.start(); return true; }catch(e){} }
-      if(this.urls[id]){ try{ var a=new Audio(this.urls[id]); a.play(); return true; }catch(e){} }
+      if(this.urls[id]){ try{ var a=new Audio(this.urls[id]); var p=a.play(); if(p&&p.catch) p.catch(function(){}); return true; }catch(e){} }
       return false;
     },
-    playBlob:function(blob){ try{ var a=new Audio(URL.createObjectURL(blob)); a.play(); }catch(e){} },
+    playBlob:function(blob){ try{ var a=new Audio(URL.createObjectURL(blob)); var p=a.play(); if(p&&p.catch) p.catch(function(){}); }catch(e){} },
     click:function(){
       if(settings.muted) return;
       var ctx=this.ensure(); if(!ctx) return;
@@ -670,8 +670,19 @@
           o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t+0.42);
         });
       }catch(e){}
+    },
+    // iOS/Safari: el audio arranca "suspendido"; hay que despertarlo dentro de un gesto del usuario.
+    unlock:function(){
+      var ctx=this.ensure(); if(!ctx) return;
+      try{ if(ctx.state==="suspended") ctx.resume(); }catch(e){}
+      try{ var b=ctx.createBuffer(1,1,22050), s=ctx.createBufferSource(); s.buffer=b; s.connect(ctx.destination); s.start(0); }catch(e){}
     }
   };
+  // Desbloqueo de audio para iPhone: al primer (y siguientes) toque/click, despierta el AudioContext.
+  (function(){
+    function unlockAudio(){ SND.unlock(); }
+    ["touchend","pointerdown","click","keydown"].forEach(function(ev){ document.addEventListener(ev, unlockAudio, {passive:true, capture:true}); });
+  })();
 
   /* ---------- Utilidades UI ---------- */
   var $=function(id){ return document.getElementById(id); };
@@ -965,7 +976,7 @@
   }
   var sndInput=document.createElement("input"); sndInput.type="file"; sndInput.accept="audio/*"; sndInput.style.display="none"; document.body.appendChild(sndInput);
   function pickSound(it, done){
-    sndInput.onchange=function(){ var f=sndInput.files[0]; sndInput.value=""; if(!f) return; if(f.size>8*1024*1024){ toast("El audio es muy pesado (máx 8MB)"); return; } IDB.put(it.id, f).then(function(){ toast("Sonido agregado 🔊"); SND.playBlob(f); if(current){ SND.loadForCard(current); } if(done) done(); if(cloudReady()){ cloudPutSound(it.id, f).then(function(){ toast("Sonido en la nube ☁️✓"); }).catch(function(){ toast("⚠️ No se pudo subir a la nube"); }); } }); };
+    sndInput.onchange=function(){ var f=sndInput.files[0]; sndInput.value=""; if(!f) return; if(f.size>8*1024*1024){ toast("El audio es muy pesado (máx 8MB)"); return; } if(/ogg|opus|webm/i.test(f.type||f.name||"")){ toast("⚠️ OGG/Opus no suena en iPhone — mejor MP3, WAV o M4A"); } IDB.put(it.id, f).then(function(){ toast("Sonido agregado 🔊"); SND.playBlob(f); if(current){ SND.loadForCard(current); } if(done) done(); if(cloudReady()){ cloudPutSound(it.id, f).then(function(){ toast("Sonido en la nube ☁️✓"); }).catch(function(){ toast("⚠️ No se pudo subir a la nube"); }); } }); };
     sndInput.click();
   }
   function updateItem(id, patch){
