@@ -903,11 +903,20 @@
     else { prompt("Copiá el link y compartilo:", url); }
   });
   var deferredInstall=null;
+  function isStandalone(){ return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone===true; }
+  function isIOS(){ return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream; }
+  function isIOSSafari(){ return isIOS() && !/crios|fxios|edgios|opios/i.test(navigator.userAgent); }
+  // En iPhone no existe beforeinstallprompt: mostramos el botón igual y explicamos cómo.
+  if(isIOS() && !isStandalone()){ var _bi=$("lnkInstall"); if(_bi) _bi.classList.remove("hidden"); }
   window.addEventListener("beforeinstallprompt", function(e){ e.preventDefault(); deferredInstall=e; var b=$("lnkInstall"); if(b) b.classList.remove("hidden"); });
   $("lnkInstall").addEventListener("click", function(){
-    if(!deferredInstall){ toast("Usá el menú del navegador → «Instalar» o «Agregar a inicio»"); return; }
-    deferredInstall.prompt();
-    deferredInstall.userChoice.then(function(r){ deferredInstall=null; $("lnkInstall").classList.add("hidden"); if(r&&r.outcome==="accepted") toast("¡Instalando! 📲"); });
+    if(deferredInstall){ deferredInstall.prompt(); deferredInstall.userChoice.then(function(r){ deferredInstall=null; $("lnkInstall").classList.add("hidden"); if(r&&r.outcome==="accepted") toast("¡Instalando! 📲"); }); return; }
+    if(isIOS()){
+      if(isIOSSafari()){ alert("📲 Instalar en iPhone:\n\n1) Tocá el botón Compartir de Safari (el cuadradito con la flecha ↑).\n2) Deslizá y elegí «Agregar a inicio».\n3) Tocá «Agregar».\n\n¡Te queda como una app en la pantalla de inicio!"); }
+      else{ alert("📲 En iPhone la instalación solo se puede desde Safari.\n\nAbrí este mismo link en Safari, tocá Compartir ↑ y elegí «Agregar a inicio»."); }
+      return;
+    }
+    toast("Usá el menú del navegador → «Instalar» o «Agregar a inicio»");
   });
   window.addEventListener("appinstalled", function(){ var b=$("lnkInstall"); if(b) b.classList.add("hidden"); toast("¡App instalada! 📲"); });
 
