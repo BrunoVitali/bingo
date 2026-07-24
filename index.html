@@ -53,6 +53,15 @@
   }
   .hidden{ display:none !important; }
 
+  /* Transición suave al cambiar de pantalla */
+  @keyframes screenIn{ from{ opacity:0; transform:translateY(10px); } to{ opacity:1; transform:none; } }
+  .screen:not(.hidden){ animation:screenIn .24s cubic-bezier(.2,.7,.3,1) both; }
+  /* Foco accesible por teclado */
+  .btn:focus-visible, .iconbtn:focus-visible, .sheet-item:focus-visible, .mini:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; }
+  /* Badge de organizador */
+  .adminbadge{ display:inline-flex; align-items:center; gap:6px; margin:14px auto 0; padding:6px 13px; border-radius:999px; font-size:12.5px; font-weight:700; letter-spacing:.02em; color:#bff0cc; background:rgba(58,157,84,.12); border:1.5px solid rgba(58,157,84,.5); }
+  @media (prefers-reduced-motion: reduce){ .screen:not(.hidden){ animation:none; } .btn{ transition:none; } }
+
   /* ---------- Título ---------- */
   .titlewrap{ position:relative; text-align:center; margin:auto 0 6px; padding-top:clamp(8px,4vw,28px); }
   .kicker{
@@ -303,8 +312,11 @@
     <button class="btn btn-line" id="lnkEdit">✏️ Editar casillas</button>
   </div>
   <button class="btn btn-line" id="lnkRank" style="width:min(100%,420px); margin:10px auto 0; border-color:var(--gold-deep); color:var(--gold)">🏆 Ranking en vivo</button>
+  <button class="btn btn-line" id="lnkShare" style="width:min(100%,420px); margin:10px auto 0">📤 Invitar amigos</button>
+  <button class="btn btn-line hidden" id="lnkInstall" style="width:min(100%,420px); margin:10px auto 0; border-color:var(--ok); color:#bff0cc">📲 Instalar la app</button>
+  <div id="adminBadge" class="adminbadge hidden">🔧 Sos el organizador</div>
 
-  <p class="footnote">Se guarda en este celular · sin internet</p>
+  <p class="footnote">Ranking, sonidos y casillas en vivo 🔥 · tu cartón se guarda en tu celu</p>
 </section>
 
 <!-- ===== JUEGO ===== -->
@@ -318,6 +330,7 @@
     <div class="actions">
       <button class="btn btn-ghost" id="btnReset">↺ Reiniciar</button>
       <button class="btn btn-ghost" id="btnNew">🔀 Nueva carta</button>
+      <button class="btn btn-ghost sq" id="btnMuteQuick" aria-label="Silenciar sonidos">🔊</button>
       <button class="btn btn-ghost sq" id="btnMenu" aria-label="Menú">⋯</button>
     </div>
   </div>
@@ -349,7 +362,7 @@
 <section id="editor" class="screen hidden">
   <div class="subhead">
     <button class="iconbtn" id="editBack" aria-label="Volver">‹</button>
-    <h2>Casillas</h2>
+    <h2 id="editorTitle">Casillas</h2>
     <span class="cnt" id="editCount"></span>
   </div>
   <div class="subbody">
@@ -732,7 +745,17 @@
   function show(screen){
     ["start","game","cards","editor","leaderboard"].forEach(function(s){ $(s).classList.toggle("hidden", s!==screen); });
     store.set("screen", screen);
+    updateRoleLabels();
+    if(screen==="start" && !$("name").value){ $("name").value=store.get("lastName","")||""; }
     window.scrollTo(0,0);
+  }
+  // Etiquetas y controles según el rol (organizador vs invitado)
+  function updateRoleLabels(){
+    var adm=isAdmin();
+    var le=$("lnkEdit"); if(le) le.textContent=adm?"✏️ Editar casillas":"👁️ Ver casillas";
+    var me=$("mEdit"); if(me) me.innerHTML='<span class="ic">'+(adm?"🎯":"👁️")+'</span> '+(adm?"Editar casillas":"Ver casillas");
+    var et=$("editorTitle"); if(et) et.textContent=adm?"Editar casillas":"Ver casillas";
+    var badge=$("adminBadge"); if(badge) badge.classList.toggle("hidden", !adm);
   }
 
   /* ---------- Estado de juego ---------- */
@@ -838,7 +861,7 @@
   }
 
   /* ---------- Abrir/crear/seguir cartón ---------- */
-  function openCard(card){ current=card; setCurrentId(card.id); $("pName").textContent=card.name; SND.loadForCard(card); buildBoard(); registerPlayer(); show("game"); }
+  function openCard(card){ current=card; setCurrentId(card.id); $("pName").textContent=card.name; SND.loadForCard(card); buildBoard(); registerPlayer(); updateMuteLbl(); show("game"); }
 
   $("nameForm").addEventListener("submit", function(e){
     e.preventDefault();
@@ -865,9 +888,28 @@
   $("mRename").addEventListener("click", function(){ closeMenu(); var nm=prompt("Nombre del cartón:", current.name); if(nm && nm.trim()){ current.name=nm.trim().slice(0,18); $("pName").textContent=current.name; persist(); toast("Renombrado"); } });
   $("mCards").addEventListener("click", function(){ closeMenu(); renderCards(); show("cards"); });
   $("mEdit").addEventListener("click", function(){ closeMenu(); renderEditor(); show("editor"); });
-  function updateMuteLbl(){ $("muteIc").textContent=settings.muted?"🔇":"🔊"; $("muteLbl").textContent=settings.muted?"Sonidos silenciados":"Sonidos activados"; }
-  $("mMute").addEventListener("click", function(){ settings.muted=!settings.muted; saveSettings(); updateMuteLbl(); toast(settings.muted?"🔇 Silenciado":"🔊 Sonidos activados"); });
+  function updateMuteLbl(){ $("muteIc").textContent=settings.muted?"🔇":"🔊"; $("muteLbl").textContent=settings.muted?"Sonidos silenciados":"Sonidos activados"; var q=$("btnMuteQuick"); if(q){ q.textContent=settings.muted?"🔇":"🔊"; q.style.color=settings.muted?"#e79385":""; } }
+  function toggleMute(){ settings.muted=!settings.muted; saveSettings(); updateMuteLbl(); toast(settings.muted?"🔇 Silenciado":"🔊 Sonidos activados"); }
+  $("mMute").addEventListener("click", toggleMute);
+  $("btnMuteQuick").addEventListener("click", toggleMute);
   $("mExit").addEventListener("click", function(){ closeMenu(); show("start"); $("name").value=current?current.name:""; });
+
+  /* ---------- Invitar amigos + Instalar app ---------- */
+  $("lnkShare").addEventListener("click", function(){
+    var url=location.href.split("#")[0];
+    var data={ title:"Bingo de la Juntada", text:"¡Sumate al Bingo de la Juntada! Abrí el link y generá tu cartón 🎲", url:url };
+    if(navigator.share){ navigator.share(data).catch(function(){}); }
+    else if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(function(){ toast("Link copiado ✓ pasáselo a tus amigos"); }).catch(function(){ prompt("Copiá el link y compartilo:", url); }); }
+    else { prompt("Copiá el link y compartilo:", url); }
+  });
+  var deferredInstall=null;
+  window.addEventListener("beforeinstallprompt", function(e){ e.preventDefault(); deferredInstall=e; var b=$("lnkInstall"); if(b) b.classList.remove("hidden"); });
+  $("lnkInstall").addEventListener("click", function(){
+    if(!deferredInstall){ toast("Usá el menú del navegador → «Instalar» o «Agregar a inicio»"); return; }
+    deferredInstall.prompt();
+    deferredInstall.userChoice.then(function(r){ deferredInstall=null; $("lnkInstall").classList.add("hidden"); if(r&&r.outcome==="accepted") toast("¡Instalando! 📲"); });
+  });
+  window.addEventListener("appinstalled", function(){ var b=$("lnkInstall"); if(b) b.classList.add("hidden"); toast("¡App instalada! 📲"); });
 
   /* ---------- Ranking (Firebase) ---------- */
   var ADMIN_NAME="bruno", ADMIN_PIN="228645";
@@ -919,7 +961,7 @@
   function toggleAdmin(){
     if(adminUnlocked()){ store.set("admin",false); toast("🔒 Admin bloqueado"); }
     else{ var pin=prompt("PIN de admin:"); if(pin===null) return; if(pin===ADMIN_PIN){ store.set("admin",true); toast("🔧 Admin desbloqueado"); } else { toast("PIN incorrecto"); return; } }
-    updateAdminBtn(); renderRank();
+    updateAdminBtn(); renderRank(); updateRoleLabels();
   }
   $("lnkRank").addEventListener("click", openLeaderboard);
   $("mRank").addEventListener("click", function(){ closeMenu(); openLeaderboard(); });
@@ -1048,7 +1090,7 @@
     $("newEmoji").value=""; $("newPhrase").value=""; $("newPhrase").focus(); renderEditor(); toast("Casilla agregada ✓");
   });
   $("newPhrase").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); $("addItem").click(); } });
-  $("resetItems").addEventListener("click", function(){ if(!confirm("¿Volver a las 42 casillas originales? (No borra tus cartones ni sonidos)")) return; store.del("items"); pushItems(getItems()); renderEditor(); toast("Casillas restauradas"); });
+  $("resetItems").addEventListener("click", function(){ if(!confirm("¿Volver a las 42 casillas originales EN TODOS los dispositivos? Reemplaza las casillas compartidas (no toca cartones ni sonidos).")) return; store.del("items"); pushItems(getItems()); renderEditor(); toast("Casillas restauradas"); });
   $("syncSounds").addEventListener("click", function(){
     if(!cloudReady()){ toast("La nube no está disponible ahora"); return; }
     var btn=$("syncSounds"); btn.disabled=true; var orig=btn.textContent; btn.textContent="Subiendo… ☁️";
