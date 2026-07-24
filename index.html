@@ -731,6 +731,7 @@
 
   function show(screen){
     ["start","game","cards","editor","leaderboard"].forEach(function(s){ $(s).classList.toggle("hidden", s!==screen); });
+    store.set("screen", screen);
     window.scrollTo(0,0);
   }
 
@@ -980,34 +981,53 @@
   function trackEmoji(inp){ inp.addEventListener("focus", function(){ lastEmojiInput=inp; }); }
 
   function renderEditor(){
+    var adm=isAdmin();
     renderPalette();
     var items=getItems(), cont=$("itemsList"); cont.innerHTML="";
     $("editCount").textContent=items.length+" casillas";
-    trackEmoji($("newEmoji"));
+    // Controles de edición: solo para el organizador (admin).
+    var additem=document.querySelector(".additem"), phint=document.querySelector(".palettehint"), pal=$("palette"), foot=document.querySelector(".editfoot");
+    [additem,phint,pal,foot].forEach(function(el){ if(el) el.classList.toggle("hidden", !adm); });
+    var note=$("editReadonlyNote");
+    if(!adm){
+      if(!note){ note=document.createElement("div"); note.id="editReadonlyNote"; note.className="palettehint"; note.style.cssText="text-align:center;padding:10px 4px;color:#b8a98a"; cont.parentNode.insertBefore(note, cont); }
+      note.textContent="👀 Solo el organizador puede editar las casillas y sonidos. Podés escuchar tocando ▶.";
+      note.classList.remove("hidden");
+    } else if(note){ note.classList.add("hidden"); }
+    if(adm) trackEmoji($("newEmoji"));
     items.forEach(function(it){
       var row=document.createElement("div"); row.className="itemrow";
       var emo=document.createElement("input"); emo.className="txt emo"; emo.value=it.e; emo.maxLength=4; emo.setAttribute("aria-label","Emoji");
       var ph=document.createElement("input"); ph.className="txt phrase"; ph.value=it.t; ph.maxLength=60; ph.setAttribute("aria-label","Texto");
-      trackEmoji(emo);
-      emo.addEventListener("input", function(){ updateItem(it.id,{e:emo.value}); });
-      ph.addEventListener("input", function(){ updateItem(it.id,{t:ph.value}); });
+      if(adm){
+        trackEmoji(emo);
+        emo.addEventListener("input", function(){ updateItem(it.id,{e:emo.value}); });
+        ph.addEventListener("input", function(){ updateItem(it.id,{t:ph.value}); });
+      } else { emo.readOnly=true; ph.readOnly=true; }
       var snd=document.createElement("span"); snd.className="sndwrap";
       IDB.has(it.id).then(function(has){ if(has){ setSndBtn(snd,it,true); } else { cloudHasSound(it.id).then(function(ch){ setSndBtn(snd,it,ch); }); } });
-      var del=document.createElement("button"); del.className="mini del"; del.textContent="🗑"; del.setAttribute("aria-label","Borrar");
-      del.addEventListener("click", function(){ if(!confirm('¿Borrar la casilla "'+it.t+'"?')) return; setItems(getItems().filter(function(x){ return x.id!==it.id; })); IDB.del(it.id); renderEditor(); toast("Casilla borrada"); });
-      row.appendChild(emo); row.appendChild(ph); row.appendChild(snd); row.appendChild(del);
+      row.appendChild(emo); row.appendChild(ph); row.appendChild(snd);
+      if(adm){
+        var del=document.createElement("button"); del.className="mini del"; del.textContent="🗑"; del.setAttribute("aria-label","Borrar");
+        del.addEventListener("click", function(){ if(!confirm('¿Borrar la casilla "'+it.t+'"?')) return; setItems(getItems().filter(function(x){ return x.id!==it.id; })); IDB.del(it.id); renderEditor(); toast("Casilla borrada"); });
+        row.appendChild(del);
+      }
       cont.appendChild(row);
     });
   }
   function setSndBtn(wrap,it,has){
     wrap.innerHTML="";
+    var adm=isAdmin();
     if(has){
       var play=document.createElement("button"); play.className="mini on"; play.textContent="▶"; play.title="Escuchar"; play.setAttribute("aria-label","Escuchar sonido");
       play.onclick=function(){ getSoundBlob(it.id).then(function(blob){ if(blob) SND.playBlob(blob); }); };
-      var rm=document.createElement("button"); rm.className="mini del"; rm.textContent="🔇"; rm.title="Quitar sonido"; rm.setAttribute("aria-label","Quitar sonido");
-      rm.onclick=function(){ if(confirm('¿Quitar el sonido de "'+it.t+'"? (se quita también de la nube)')){ IDB.del(it.id); cloudDelSound(it.id); setSndBtn(wrap,it,false); toast("Sonido quitado"); } };
-      wrap.appendChild(play); wrap.appendChild(rm);
-    } else {
+      wrap.appendChild(play);
+      if(adm){
+        var rm=document.createElement("button"); rm.className="mini del"; rm.textContent="🔇"; rm.title="Quitar sonido"; rm.setAttribute("aria-label","Quitar sonido");
+        rm.onclick=function(){ if(confirm('¿Quitar el sonido de "'+it.t+'"? (se quita también de la nube)')){ IDB.del(it.id); cloudDelSound(it.id); setSndBtn(wrap,it,false); toast("Sonido quitado"); } };
+        wrap.appendChild(rm);
+      }
+    } else if(adm){
       var add=document.createElement("button"); add.className="mini"; add.textContent="🎵"; add.title="Agregar sonido"; add.setAttribute("aria-label","Agregar sonido");
       add.onclick=function(){ pickSound(it, function(){ setSndBtn(wrap,it,true); }); };
       wrap.appendChild(add);
@@ -1069,7 +1089,14 @@
       }
     }catch(e){}
     var curId=getCurrentId(), card=curId?findCard(curId):null;
-    if(card){ openCard(card); } else { show("start"); }
+    var s=store.get("screen", card?"game":"start");   // leer ANTES: openCard pisa "screen" con "game"
+    if(card){ openCard(card); }              // reconstruye el cartón y el estado (deja screen="game")
+    // Restaurar la pantalla donde estabas, no tirarte siempre al cartón.
+    if(s==="editor"){ renderEditor(); show("editor"); }
+    else if(s==="cards"){ renderCards(); show("cards"); }
+    else if(s==="leaderboard"){ openLeaderboard(); }
+    else if(s==="game" && card){ /* ya quedó en el cartón */ }
+    else { show("start"); }
   })();
 
 })();
