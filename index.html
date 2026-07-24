@@ -362,6 +362,7 @@
     <div class="palette" id="palette"></div>
     <div id="itemsList" class="itemlist"></div>
     <div class="editfoot">
+      <button class="btn btn-line" id="syncSounds" style="flex:1">☁️ Subir todos los sonidos a la nube</button>
       <button class="btn btn-line" id="resetItems" style="flex:1">↺ Volver a las casillas originales</button>
     </div>
   </div>
@@ -409,6 +410,7 @@
   // Firebase: ranking compartido en vivo (Firestore)
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
   import { getFirestore, doc, setDoc, increment, serverTimestamp, collection, query, orderBy, limit, onSnapshot, getDocs, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+  import { getStorage, ref as sref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
   try{
     const app = initializeApp({
       apiKey: "AIzaSyA1TV0sL9fmFeVlsGaRJTZeSGJ6Todj90g",
@@ -419,6 +421,7 @@
       appId: "1:1079914583614:web:6d0160d88348014b28636f"
     });
     const db = getFirestore(app);
+    const storage = getStorage(app);
     const COL = "players";
     window.BingoDB = {
       ok: true,
@@ -427,7 +430,10 @@
       adjust: function(id, nb, nf){ var d={ updated:serverTimestamp() }; if(nb) d.bingos=increment(nb); if(nf) d.fullCards=increment(nf); return setDoc(doc(db,COL,id), d, {merge:true}); },
       remove: function(id){ return deleteDoc(doc(db,COL,id)); },
       resetAll: function(){ return getDocs(collection(db,COL)).then(function(snap){ var batch=writeBatch(db); snap.forEach(function(dd){ batch.delete(dd.ref); }); return batch.commit(); }); },
-      watch: function(cb, err){ try{ var q=query(collection(db,COL), orderBy("bingos","desc"), limit(100)); return onSnapshot(q, function(snap){ var rows=[]; snap.forEach(function(dd){ var v=dd.data(); rows.push({ id:dd.id, name:v.name||"?", bingos:v.bingos||0, fullCards:v.fullCards||0 }); }); cb(rows); }, function(e){ if(err) err(e); }); }catch(e){ if(err) err(e); return function(){}; } }
+      watch: function(cb, err){ try{ var q=query(collection(db,COL), orderBy("bingos","desc"), limit(100)); return onSnapshot(q, function(snap){ var rows=[]; snap.forEach(function(dd){ var v=dd.data(); rows.push({ id:dd.id, name:v.name||"?", bingos:v.bingos||0, fullCards:v.fullCards||0 }); }); cb(rows); }, function(e){ if(err) err(e); }); }catch(e){ if(err) err(e); return function(){}; } },
+      putSound: function(id, blob){ return uploadBytes(sref(storage, "sounds/"+id), blob).then(function(r){ return getDownloadURL(r.ref); }); },
+      getSoundURL: function(id){ return getDownloadURL(sref(storage, "sounds/"+id)); },
+      delSound: function(id){ return deleteObject(sref(storage, "sounds/"+id)); }
     };
   }catch(e){ window.BingoDB=null; console.warn("Firebase no disponible:", e); }
   window.dispatchEvent(new Event("bingodb-ready"));
@@ -569,6 +575,11 @@
     has:function(k){ return this.get(k).then(function(v){ return !!v; }); }
   };
 
+  /* ---------- Sincronización de sonidos con la nube (Firebase Storage) ---------- */
+  function cloudReady(){ return !!(window.BingoDB && window.BingoDB.ok && window.BingoDB.putSound); }
+  function cloudPutSound(id, blob){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.putSound(id, blob).catch(function(e){ console.warn("No se pudo subir el sonido "+id, e); throw e; }); }
+  function cloudDelSound(id){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.delSound(id).catch(function(){}); }
+
   var SND = {
     ctx:null, buffers:{}, urls:{}, onLoad:null,
     ensure:function(){ if(!this.ctx){ try{ this.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(this.ctx && this.ctx.state==="suspended"){ this.ctx.resume(); } return this.ctx; },
@@ -578,11 +589,25 @@
       var ids=[]; card.cells.forEach(function(c){ if(c.id) ids.push(c.id); });
       ids.forEach(function(id){
         IDB.get(id).then(function(blob){
-          if(!blob) return;
-          try{ self.urls[id]=URL.createObjectURL(blob); }catch(e){}
-          if(self.onLoad) self.onLoad(id);
-          var ctx=self.ensure(); if(!ctx) return;
-          blob.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab).then(function(buf){ self.buffers[id]=buf; }).catch(function(){}); });
+          if(blob){
+            try{ self.urls[id]=URL.createObjectURL(blob); }catch(e){}
+            if(self.onLoad) self.onLoad(id);
+            var ctx=self.ensure(); if(!ctx) return;
+            blob.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab).then(function(buf){ self.buffers[id]=buf; }).catch(function(){}); });
+            return;
+          }
+          // No está local: buscar en la nube (Firebase Storage) y cachear.
+          if(!cloudReady()) return;
+          window.BingoDB.getSoundURL(id).then(function(url){
+            if(!url) return;
+            self.urls[id]=url;                 // reproducible ya mismo vía <audio> (no requiere CORS)
+            if(self.onLoad) self.onLoad(id);
+            // intentar cachear en IndexedDB para próxima vez y habilitar WebAudio (si CORS lo permite)
+            fetch(url).then(function(r){ return r.blob(); }).then(function(b){
+              IDB.put(id, b);
+              var ctx=self.ensure(); if(ctx){ b.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab).then(function(buf){ self.buffers[id]=buf; }).catch(function(){}); }); }
+            }).catch(function(){});
+          }).catch(function(){});
         }).catch(function(){});
       });
     },
@@ -901,7 +926,7 @@
       var play=document.createElement("button"); play.className="mini on"; play.textContent="▶"; play.title="Escuchar"; play.setAttribute("aria-label","Escuchar sonido");
       play.onclick=function(){ IDB.get(it.id).then(function(blob){ if(blob) SND.playBlob(blob); }); };
       var rm=document.createElement("button"); rm.className="mini del"; rm.textContent="🔇"; rm.title="Quitar sonido"; rm.setAttribute("aria-label","Quitar sonido");
-      rm.onclick=function(){ if(confirm('¿Quitar el sonido de "'+it.t+'"?')){ IDB.del(it.id).then(function(){ setSndBtn(wrap,it,false); toast("Sonido quitado"); }); } };
+      rm.onclick=function(){ if(confirm('¿Quitar el sonido de "'+it.t+'"? (se quita también de la nube)')){ IDB.del(it.id); cloudDelSound(it.id); setSndBtn(wrap,it,false); toast("Sonido quitado"); } };
       wrap.appendChild(play); wrap.appendChild(rm);
     } else {
       var add=document.createElement("button"); add.className="mini"; add.textContent="🎵"; add.title="Agregar sonido"; add.setAttribute("aria-label","Agregar sonido");
@@ -911,7 +936,7 @@
   }
   var sndInput=document.createElement("input"); sndInput.type="file"; sndInput.accept="audio/*"; sndInput.style.display="none"; document.body.appendChild(sndInput);
   function pickSound(it, done){
-    sndInput.onchange=function(){ var f=sndInput.files[0]; sndInput.value=""; if(!f) return; if(f.size>8*1024*1024){ toast("El audio es muy pesado (máx 8MB)"); return; } IDB.put(it.id, f).then(function(){ toast("Sonido agregado 🔊"); SND.playBlob(f); if(current){ SND.loadForCard(current); } if(done) done(); }); };
+    sndInput.onchange=function(){ var f=sndInput.files[0]; sndInput.value=""; if(!f) return; if(f.size>8*1024*1024){ toast("El audio es muy pesado (máx 8MB)"); return; } IDB.put(it.id, f).then(function(){ toast("Sonido agregado 🔊"); SND.playBlob(f); if(current){ SND.loadForCard(current); } if(done) done(); if(cloudReady()){ cloudPutSound(it.id, f).then(function(){ toast("Sonido en la nube ☁️✓"); }).catch(function(){ toast("⚠️ No se pudo subir a la nube"); }); } }); };
     sndInput.click();
   }
   function updateItem(id, patch){
@@ -925,6 +950,23 @@
   });
   $("newPhrase").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); $("addItem").click(); } });
   $("resetItems").addEventListener("click", function(){ if(!confirm("¿Volver a las 42 casillas originales? (No borra tus cartones ni sonidos)")) return; store.del("items"); renderEditor(); toast("Casillas restauradas"); });
+  $("syncSounds").addEventListener("click", function(){
+    if(!cloudReady()){ toast("La nube no está disponible ahora"); return; }
+    var btn=$("syncSounds"), items=getItems(), uploaded=0, withSound=0;
+    btn.disabled=true; var orig=btn.textContent; btn.textContent="Subiendo… ☁️";
+    var tasks=items.map(function(it){
+      return IDB.get(it.id).then(function(blob){
+        if(!blob) return;
+        withSound++;
+        return cloudPutSound(it.id, blob).then(function(){ uploaded++; });
+      }).catch(function(){});
+    });
+    Promise.all(tasks).then(function(){
+      btn.disabled=false; btn.textContent=orig;
+      if(withSound===0) toast("No hay sonidos locales para subir");
+      else toast("☁️ "+uploaded+"/"+withSound+" sonidos subidos a la nube");
+    });
+  });
 
   /* ---------- Migración desde v1 + arranque ---------- */
   (function boot(){
