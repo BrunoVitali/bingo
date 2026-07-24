@@ -472,7 +472,9 @@
         }).catch(function(){ return deleteDoc(doc(db,SCOL,id)); });
       },
       hasSoundData: function(id){ return getDoc(doc(db,SCOL,id)).then(function(m){ return m.exists(); }).catch(function(){ return false; }); },
-      listSoundIds: function(){ return getDocs(collection(db,SCOL)).then(function(snap){ var ids=[]; snap.forEach(function(d){ ids.push(d.id); }); return ids; }); }
+      listSoundIds: function(){ return getDocs(collection(db,SCOL)).then(function(snap){ var ids=[]; snap.forEach(function(d){ ids.push(d.id); }); return ids; }); },
+      saveItems: function(list){ return setDoc(doc(db,"config","items"), { list: list, updated: serverTimestamp() }); },
+      watchItems: function(cb, err){ try{ return onSnapshot(doc(db,"config","items"), function(s){ cb(s.exists() ? ((s.data()&&s.data().list)||[]) : undefined); }, function(e){ if(err) err(e); }); }catch(e){ if(err) err(e); return function(){}; } }
     };
   }catch(e){ window.BingoDB=null; console.warn("Firebase no disponible:", e); }
   window.dispatchEvent(new Event("bingodb-ready"));
@@ -566,7 +568,33 @@
     if(s && s.length){ return s; }
     return DEFAULT_ITEMS.map(function(it,i){ return {id:"d"+i, t:it.t, e:it.e}; });
   }
-  function setItems(list){ store.set("items", list); }
+  function setItemsLocal(list){ store.set("items", list); }
+  var _pushItemsT=null;
+  function pushItems(list){
+    if(!(window.BingoDB && window.BingoDB.ok && window.BingoDB.saveItems)) return;
+    clearTimeout(_pushItemsT);
+    _pushItemsT=setTimeout(function(){ window.BingoDB.saveItems(list).catch(function(e){ console.warn("No se pudieron sincronizar las casillas", e); }); }, 700);
+  }
+  function setItems(list){ setItemsLocal(list); pushItems(list); }
+  // Sincronización en vivo de la lista de casillas entre dispositivos (Firestore).
+  var _itemsSyncStarted=false;
+  function startItemsSync(){
+    if(_itemsSyncStarted) return;
+    if(!(window.BingoDB && window.BingoDB.ok && window.BingoDB.watchItems)) return;
+    _itemsSyncStarted=true;
+    window.BingoDB.watchItems(function(list){
+      if(list===undefined){ // todavía no hay lista compartida: sembrar con la local
+        if(window.BingoDB.saveItems) window.BingoDB.saveItems(getItems()).catch(function(){});
+        return;
+      }
+      if(!list || !list.length) return;
+      if(JSON.stringify(list)===JSON.stringify(getItems())) return; // sin cambios reales
+      setItemsLocal(list);                                          // adoptar (sin re-enviar)
+      if(!$("editor").classList.contains("hidden")) renderEditor(); // refrescar editor si está abierto
+    }, function(e){ console.warn("watchItems error", e); });
+  }
+  window.addEventListener("bingodb-ready", startItemsSync);
+  startItemsSync();
 
   function loadCards(){ return store.get("cards", []); }
   function saveCards(list){ store.set("cards", list); }
@@ -1000,7 +1028,7 @@
     $("newEmoji").value=""; $("newPhrase").value=""; $("newPhrase").focus(); renderEditor(); toast("Casilla agregada ✓");
   });
   $("newPhrase").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); $("addItem").click(); } });
-  $("resetItems").addEventListener("click", function(){ if(!confirm("¿Volver a las 42 casillas originales? (No borra tus cartones ni sonidos)")) return; store.del("items"); renderEditor(); toast("Casillas restauradas"); });
+  $("resetItems").addEventListener("click", function(){ if(!confirm("¿Volver a las 42 casillas originales? (No borra tus cartones ni sonidos)")) return; store.del("items"); pushItems(getItems()); renderEditor(); toast("Casillas restauradas"); });
   $("syncSounds").addEventListener("click", function(){
     if(!cloudReady()){ toast("La nube no está disponible ahora"); return; }
     var btn=$("syncSounds"); btn.disabled=true; var orig=btn.textContent; btn.textContent="Subiendo… ☁️";
