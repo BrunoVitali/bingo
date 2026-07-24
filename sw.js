@@ -1,5 +1,5 @@
 /* Service worker del Bingo de la Juntada: hace la app instalable y offline. */
-const CACHE = 'bingo-juntada-v11';
+const CACHE = 'bingo-juntada-v12';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function(e){

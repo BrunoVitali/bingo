@@ -437,10 +437,19 @@
         return blobToB64(blob).then(function(b64){
           var parts=[]; for(var i=0;i<b64.length;i+=CHUNK) parts.push(b64.slice(i,i+CHUNK));
           return window.BingoDB.delSoundData(id).then(function(){
-            var batch=writeBatch(db);
-            batch.set(doc(db,SCOL,id), { type: blob.type||"audio/mpeg", n: parts.length, size: blob.size||0, updated: serverTimestamp() });
-            parts.forEach(function(p,idx){ batch.set(doc(db,SCOL,id,"parts",String(idx)), { i: idx, d: p }); });
-            return batch.commit();
+            // Se sube en tandas (meta + grupos de pedazos) para no pasar el límite de ~10MB por commit.
+            var chain=setDoc(doc(db,SCOL,id), { type: blob.type||"audio/mpeg", n: parts.length, size: blob.size||0, updated: serverTimestamp() });
+            var PER_BATCH=6;
+            for(var g=0; g<parts.length; g+=PER_BATCH){
+              (function(group){
+                chain=chain.then(function(){
+                  var batch=writeBatch(db);
+                  group.forEach(function(item){ batch.set(doc(db,SCOL,id,"parts",String(item.idx)), { i: item.idx, d: item.d }); });
+                  return batch.commit();
+                });
+              })(parts.slice(g,g+PER_BATCH).map(function(p,k){ return { idx: g+k, d: p }; }));
+            }
+            return chain;
           });
         });
       },
@@ -601,7 +610,8 @@
     put:function(k,v){ var self=this; return self.open().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("sounds","readwrite"); tx.objectStore("sounds").put(v,k); tx.oncomplete=function(){res();}; tx.onerror=function(e){rej(e);}; }); }); },
     get:function(k){ var self=this; return self.open().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("sounds","readonly"); var q=tx.objectStore("sounds").get(k); q.onsuccess=function(){res(q.result||null);}; q.onerror=function(e){rej(e);}; }); }); },
     del:function(k){ var self=this; return self.open().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("sounds","readwrite"); tx.objectStore("sounds").delete(k); tx.oncomplete=function(){res();}; tx.onerror=function(e){rej(e);}; }); }); },
-    has:function(k){ return this.get(k).then(function(v){ return !!v; }); }
+    has:function(k){ return this.get(k).then(function(v){ return !!v; }); },
+    keys:function(){ var self=this; return self.open().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("sounds","readonly"); var q=tx.objectStore("sounds").getAllKeys(); q.onsuccess=function(){ res(q.result||[]); }; q.onerror=function(e){ rej(e); }; }); }); }
   };
 
   /* ---------- Sincronización de sonidos con la nube (Firestore) ---------- */
@@ -992,20 +1002,22 @@
   $("resetItems").addEventListener("click", function(){ if(!confirm("¿Volver a las 42 casillas originales? (No borra tus cartones ni sonidos)")) return; store.del("items"); renderEditor(); toast("Casillas restauradas"); });
   $("syncSounds").addEventListener("click", function(){
     if(!cloudReady()){ toast("La nube no está disponible ahora"); return; }
-    var btn=$("syncSounds"), items=getItems(), uploaded=0, withSound=0;
-    btn.disabled=true; var orig=btn.textContent; btn.textContent="Subiendo… ☁️";
-    var tasks=items.map(function(it){
-      return IDB.get(it.id).then(function(blob){
-        if(!blob) return;
-        withSound++;
-        return cloudPutSound(it.id, blob).then(function(){ uploaded++; });
-      }).catch(function(){});
-    });
-    Promise.all(tasks).then(function(){
-      btn.disabled=false; btn.textContent=orig;
-      if(withSound===0) toast("No hay sonidos locales para subir");
-      else toast("☁️ "+uploaded+"/"+withSound+" sonidos subidos a la nube");
-    });
+    var btn=$("syncSounds"); btn.disabled=true; var orig=btn.textContent; btn.textContent="Subiendo… ☁️";
+    IDB.keys().then(function(keys){
+      var ok=0, fail=0, failed=[];
+      var tasks=keys.map(function(id){
+        return IDB.get(id).then(function(blob){
+          if(!blob) return;
+          return cloudPutSound(id, blob).then(function(){ ok++; }).catch(function(){ fail++; failed.push(id); });
+        }).catch(function(){ fail++; failed.push(id); });
+      });
+      return Promise.all(tasks).then(function(){
+        btn.disabled=false; btn.textContent=orig;
+        if(ok+fail===0){ toast("No hay sonidos locales para subir"); }
+        else if(fail===0){ toast("☁️ "+ok+" sonidos subidos a la nube"); }
+        else { toast("☁️ "+ok+" subidos, "+fail+" fallaron: "+failed.join(", ")); console.warn("Sonidos que fallaron al subir:", failed); }
+      });
+    }).catch(function(){ btn.disabled=false; btn.textContent=orig; toast("No se pudieron leer los sonidos locales"); });
   });
 
   /* ---------- Migración desde v1 + arranque ---------- */
