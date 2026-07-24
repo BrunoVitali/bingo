@@ -1007,8 +1007,11 @@
       var ok=0, fail=0, failed=[];
       var tasks=keys.map(function(id){
         return IDB.get(id).then(function(blob){
-          if(!blob) return;
-          return cloudPutSound(id, blob).then(function(){ ok++; }).catch(function(){ fail++; failed.push(id); });
+          if(!blob || !blob.size){ fail++; failed.push(id+"(vacío)"); return; }
+          // subir y CONFIRMAR contra el servidor que realmente quedó guardado
+          return cloudPutSound(id, blob).then(function(){ return cloudHasSound(id); }).then(function(confirmed){
+            if(confirmed){ ok++; } else { fail++; failed.push(id); }
+          }).catch(function(){ fail++; failed.push(id); });
         }).catch(function(){ fail++; failed.push(id); });
       });
       return Promise.all(tasks).then(function(){
