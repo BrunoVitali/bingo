@@ -471,7 +471,8 @@
           var batch=writeBatch(db); snap.forEach(function(d){ batch.delete(d.ref); }); batch.delete(doc(db,SCOL,id)); return batch.commit();
         }).catch(function(){ return deleteDoc(doc(db,SCOL,id)); });
       },
-      hasSoundData: function(id){ return getDoc(doc(db,SCOL,id)).then(function(m){ return m.exists(); }).catch(function(){ return false; }); }
+      hasSoundData: function(id){ return getDoc(doc(db,SCOL,id)).then(function(m){ return m.exists(); }).catch(function(){ return false; }); },
+      listSoundIds: function(){ return getDocs(collection(db,SCOL)).then(function(snap){ var ids=[]; snap.forEach(function(d){ ids.push(d.id); }); return ids; }); }
     };
   }catch(e){ window.BingoDB=null; console.warn("Firebase no disponible:", e); }
   window.dispatchEvent(new Event("bingodb-ready"));
@@ -1003,22 +1004,26 @@
   $("syncSounds").addEventListener("click", function(){
     if(!cloudReady()){ toast("La nube no está disponible ahora"); return; }
     var btn=$("syncSounds"); btn.disabled=true; var orig=btn.textContent; btn.textContent="Subiendo… ☁️";
+    var nameOf={}; getItems().forEach(function(it){ nameOf[it.id]=it.t; });
     IDB.keys().then(function(keys){
-      var ok=0, fail=0, failed=[];
-      var tasks=keys.map(function(id){
+      var errors={}, withSound=[];
+      return Promise.all(keys.map(function(id){
         return IDB.get(id).then(function(blob){
-          if(!blob || !blob.size){ fail++; failed.push(id+"(vacío)"); return; }
-          // subir y CONFIRMAR contra el servidor que realmente quedó guardado
-          return cloudPutSound(id, blob).then(function(){ return cloudHasSound(id); }).then(function(confirmed){
-            if(confirmed){ ok++; } else { fail++; failed.push(id); }
-          }).catch(function(){ fail++; failed.push(id); });
-        }).catch(function(){ fail++; failed.push(id); });
-      });
-      return Promise.all(tasks).then(function(){
-        btn.disabled=false; btn.textContent=orig;
-        if(ok+fail===0){ toast("No hay sonidos locales para subir"); }
-        else if(fail===0){ toast("☁️ "+ok+" sonidos subidos a la nube"); }
-        else { toast("☁️ "+ok+" subidos, "+fail+" fallaron: "+failed.join(", ")); console.warn("Sonidos que fallaron al subir:", failed); }
+          if(!blob || !blob.size){ errors[id]="archivo local vacío ("+((blob&&blob.size)||0)+" bytes)"; return; }
+          withSound.push(id);
+          return cloudPutSound(id, blob).catch(function(e){ errors[id]=String(e&&(e.code||e.message||e))||"error desconocido"; });
+        }).catch(function(){ errors[id]="no se pudo leer local"; });
+      })).then(function(){
+        // Comparación autoritativa: qué hay REALMENTE en el servidor.
+        return window.BingoDB.listSoundIds().then(function(cloudIds){
+          btn.disabled=false; btn.textContent=orig;
+          var missing=withSound.filter(function(id){ return cloudIds.indexOf(id)<0; });
+          if(missing.length===0){ toast("☁️ "+withSound.length+" sonidos en la nube ✓"); return; }
+          toast("⚠️ "+missing.length+" no quedaron en la nube");
+          var lines=missing.map(function(id){ return "• "+(nameOf[id]||"(sin casilla)")+"  ["+id+"]\n   → "+(errors[id]||"subió sin error pero no quedó guardado"); });
+          console.warn("No quedaron en la nube:", missing, errors);
+          alert("Estos sonidos NO quedaron en la nube:\n\n"+lines.join("\n\n")+"\n\nSacale una foto a esto y mandámela.");
+        });
       });
     }).catch(function(){ btn.disabled=false; btn.textContent=orig; toast("No se pudieron leer los sonidos locales"); });
   });
