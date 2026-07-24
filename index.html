@@ -409,8 +409,7 @@
 <script type="module">
   // Firebase: ranking compartido en vivo (Firestore)
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-  import { getFirestore, doc, setDoc, increment, serverTimestamp, collection, query, orderBy, limit, onSnapshot, getDocs, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
-  import { getStorage, ref as sref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
+  import { getFirestore, doc, setDoc, getDoc, increment, serverTimestamp, collection, query, orderBy, limit, onSnapshot, getDocs, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
   try{
     const app = initializeApp({
       apiKey: "AIzaSyA1TV0sL9fmFeVlsGaRJTZeSGJ6Todj90g",
@@ -421,8 +420,11 @@
       appId: "1:1079914583614:web:6d0160d88348014b28636f"
     });
     const db = getFirestore(app);
-    const storage = getStorage(app);
     const COL = "players";
+    const SCOL = "sounds";           // sonidos compartidos (Firestore, sin Storage)
+    const CHUNK = 700000;            // tamaño de cada pedazo base64 (~700KB, bajo el límite de 1MB por doc)
+    function blobToB64(blob){ return new Promise(function(res,rej){ var r=new FileReader(); r.onload=function(){ var s=String(r.result); res(s.slice(s.indexOf(",")+1)); }; r.onerror=rej; r.readAsDataURL(blob); }); }
+    function b64ToBlob(b64,type){ var bin=atob(b64), n=bin.length, a=new Uint8Array(n); for(var i=0;i<n;i++) a[i]=bin.charCodeAt(i); return new Blob([a],{type:type||"audio/mpeg"}); }
     window.BingoDB = {
       ok: true,
       setName: function(id, name){ return setDoc(doc(db,COL,id), { name:name, bingos:increment(0), fullCards:increment(0), updated:serverTimestamp() }, {merge:true}); },
@@ -431,9 +433,35 @@
       remove: function(id){ return deleteDoc(doc(db,COL,id)); },
       resetAll: function(){ return getDocs(collection(db,COL)).then(function(snap){ var batch=writeBatch(db); snap.forEach(function(dd){ batch.delete(dd.ref); }); return batch.commit(); }); },
       watch: function(cb, err){ try{ var q=query(collection(db,COL), orderBy("bingos","desc"), limit(100)); return onSnapshot(q, function(snap){ var rows=[]; snap.forEach(function(dd){ var v=dd.data(); rows.push({ id:dd.id, name:v.name||"?", bingos:v.bingos||0, fullCards:v.fullCards||0 }); }); cb(rows); }, function(e){ if(err) err(e); }); }catch(e){ if(err) err(e); return function(){}; } },
-      putSound: function(id, blob){ return uploadBytes(sref(storage, "sounds/"+id), blob).then(function(r){ return getDownloadURL(r.ref); }); },
-      getSoundURL: function(id){ return getDownloadURL(sref(storage, "sounds/"+id)); },
-      delSound: function(id){ return deleteObject(sref(storage, "sounds/"+id)); }
+      putSoundData: function(id, blob){
+        return blobToB64(blob).then(function(b64){
+          var parts=[]; for(var i=0;i<b64.length;i+=CHUNK) parts.push(b64.slice(i,i+CHUNK));
+          return window.BingoDB.delSoundData(id).then(function(){
+            var batch=writeBatch(db);
+            batch.set(doc(db,SCOL,id), { type: blob.type||"audio/mpeg", n: parts.length, size: blob.size||0, updated: serverTimestamp() });
+            parts.forEach(function(p,idx){ batch.set(doc(db,SCOL,id,"parts",String(idx)), { i: idx, d: p }); });
+            return batch.commit();
+          });
+        });
+      },
+      getSoundData: function(id){
+        return getDoc(doc(db,SCOL,id)).then(function(m){
+          if(!m.exists()) return null;
+          var meta=m.data();
+          return getDocs(collection(db,SCOL,id,"parts")).then(function(snap){
+            var arr=[]; snap.forEach(function(d){ var v=d.data(); arr.push({i:v.i||0, d:v.d||""}); });
+            arr.sort(function(a,b){ return a.i-b.i; });
+            var b64=arr.map(function(x){ return x.d; }).join("");
+            if(!b64) return null;
+            return b64ToBlob(b64, meta.type);
+          });
+        });
+      },
+      delSoundData: function(id){
+        return getDocs(collection(db,SCOL,id,"parts")).then(function(snap){
+          var batch=writeBatch(db); snap.forEach(function(d){ batch.delete(d.ref); }); batch.delete(doc(db,SCOL,id)); return batch.commit();
+        }).catch(function(){ return deleteDoc(doc(db,SCOL,id)); });
+      }
     };
   }catch(e){ window.BingoDB=null; console.warn("Firebase no disponible:", e); }
   window.dispatchEvent(new Event("bingodb-ready"));
@@ -575,10 +603,10 @@
     has:function(k){ return this.get(k).then(function(v){ return !!v; }); }
   };
 
-  /* ---------- Sincronización de sonidos con la nube (Firebase Storage) ---------- */
-  function cloudReady(){ return !!(window.BingoDB && window.BingoDB.ok && window.BingoDB.putSound); }
-  function cloudPutSound(id, blob){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.putSound(id, blob).catch(function(e){ console.warn("No se pudo subir el sonido "+id, e); throw e; }); }
-  function cloudDelSound(id){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.delSound(id).catch(function(){}); }
+  /* ---------- Sincronización de sonidos con la nube (Firestore) ---------- */
+  function cloudReady(){ return !!(window.BingoDB && window.BingoDB.ok && window.BingoDB.putSoundData); }
+  function cloudPutSound(id, blob){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.putSoundData(id, blob).catch(function(e){ console.warn("No se pudo subir el sonido "+id, e); throw e; }); }
+  function cloudDelSound(id){ if(!cloudReady()) return Promise.resolve(); return window.BingoDB.delSoundData(id).catch(function(){}); }
 
   var SND = {
     ctx:null, buffers:{}, urls:{}, onLoad:null,
@@ -596,17 +624,14 @@
             blob.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab).then(function(buf){ self.buffers[id]=buf; }).catch(function(){}); });
             return;
           }
-          // No está local: buscar en la nube (Firebase Storage) y cachear.
+          // No está local: buscar en la nube (Firestore) y cachear.
           if(!cloudReady()) return;
-          window.BingoDB.getSoundURL(id).then(function(url){
-            if(!url) return;
-            self.urls[id]=url;                 // reproducible ya mismo vía <audio> (no requiere CORS)
+          window.BingoDB.getSoundData(id).then(function(b){
+            if(!b) return;
+            try{ self.urls[id]=URL.createObjectURL(b); }catch(e){}
             if(self.onLoad) self.onLoad(id);
-            // intentar cachear en IndexedDB para próxima vez y habilitar WebAudio (si CORS lo permite)
-            fetch(url).then(function(r){ return r.blob(); }).then(function(b){
-              IDB.put(id, b);
-              var ctx=self.ensure(); if(ctx){ b.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab).then(function(buf){ self.buffers[id]=buf; }).catch(function(){}); }); }
-            }).catch(function(){});
+            IDB.put(id, b);                    // cachear localmente para próxima vez
+            var ctx=self.ensure(); if(ctx){ b.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab).then(function(buf){ self.buffers[id]=buf; }).catch(function(){}); }); }
           }).catch(function(){});
         }).catch(function(){});
       });
